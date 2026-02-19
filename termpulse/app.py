@@ -78,6 +78,10 @@ class TermPulseApp(App):
 
     def on_mount(self) -> None:
         """Start the convergence timers."""
+        # Cached state for cross-widget sharing
+        self._last_git = None
+        self._last_commands = None
+
         # Git: refresh every 5 seconds
         self.set_interval(5.0, self._refresh_git)
         # System: refresh every 2 seconds
@@ -96,6 +100,7 @@ class TermPulseApp(App):
     def _refresh_git(self) -> None:
         """Collect and update git state."""
         state = collect_git()
+        self._last_git = state
         widget = self.query_one("#git-pulse", GitPulse)
         widget.git_state = state
 
@@ -113,13 +118,14 @@ class TermPulseApp(App):
     def _refresh_commands(self) -> None:
         """Collect and update command flow."""
         entries = collect_commands(limit=100)
+        self._last_commands = entries
         widget = self.query_one("#command-flow", CommandFlow)
         widget.commands = entries
 
     def _refresh_momentum(self) -> None:
-        """Collect and update momentum metrics."""
-        git = collect_git()
-        commands = collect_commands(limit=100)
+        """Collect and update momentum metrics, reusing cached git/command data."""
+        git = self._last_git if self._last_git is not None else collect_git()
+        commands = self._last_commands if self._last_commands is not None else collect_commands(limit=100)
         momentum = collect_momentum(git, commands)
         widget = self.query_one("#momentum", MomentumTracker)
         widget.momentum = momentum

@@ -9,13 +9,11 @@ Each widget renders one domain of developer awareness:
 
 from __future__ import annotations
 
-from rich.bar import Bar
 from rich.console import Group
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 from textual.reactive import reactive
-from textual.widget import Widget
 from textual.widgets import Static
 
 from termpulse.collectors import (
@@ -201,7 +199,7 @@ class SystemVitals(Static):
         table = Table.grid(padding=(0, 1))
         table.add_column(width=4, justify="right")
         table.add_column(width=22)
-        table.add_column(width=6, justify="right")
+        table.add_column(width=16, justify="right")
 
         # CPU with sparkline history
         cpu_spark = sparkline(s.cpu_history, 20)
@@ -214,19 +212,25 @@ class SystemVitals(Static):
         # Memory
         mem_fill = int((s.memory_percent / 100) * 20)
         mem_bar = "█" * mem_fill + "░" * (20 - mem_fill)
+        mem_detail = Text()
+        mem_detail.append(f"{s.memory_percent:4.0f}%", style=f"bold {_color(s.memory_percent)}")
+        mem_detail.append(f" {s.memory_used_gb}/{s.memory_total_gb}G", style="dim")
         table.add_row(
             Text("MEM", style="bold"),
             Text(mem_bar, style=_color(s.memory_percent)),
-            Text(f"{s.memory_percent:4.0f}%", style=f"bold {_color(s.memory_percent)}"),
+            mem_detail,
         )
 
         # Disk
         disk_fill = int((s.disk_percent / 100) * 20)
         disk_bar = "█" * disk_fill + "░" * (20 - disk_fill)
+        disk_detail = Text()
+        disk_detail.append(f"{s.disk_percent:4.0f}%", style=f"bold {_color(s.disk_percent)}")
+        disk_detail.append(f" {s.disk_used_gb}/{s.disk_total_gb}G", style="dim")
         table.add_row(
             Text("DSK", style="bold"),
             Text(disk_bar, style=_color(s.disk_percent)),
-            Text(f"{s.disk_percent:4.0f}%", style=f"bold {_color(s.disk_percent)}"),
+            disk_detail,
         )
 
         # Network throughput

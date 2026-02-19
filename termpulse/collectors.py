@@ -9,6 +9,7 @@ Each collector gathers one domain of information:
 
 from __future__ import annotations
 
+import math
 import os
 import subprocess
 import time
@@ -107,7 +108,7 @@ def collect_git(cwd: Optional[str] = None) -> GitState:
                 state.conflicts += 1
             elif x in "MADRC":
                 state.staged += 1
-            if y in "MD":
+            if y in "MD" and x != "U" and y != "U":
                 state.modified += 1
             elif y == "?" and x == "?":
                 state.untracked += 1
@@ -193,9 +194,12 @@ def collect_system() -> SystemState:
         state.net_recv_bytes = int((net.bytes_recv - _net_last["recv"]) / elapsed)
     _net_last = {"sent": net.bytes_sent, "recv": net.bytes_recv, "time": now}
 
-    # Load average
-    load = os.getloadavg()
-    state.load_avg_1m = round(load[0], 2)
+    # Load average (not available on Windows)
+    try:
+        load = os.getloadavg()
+        state.load_avg_1m = round(load[0], 2)
+    except (OSError, AttributeError):
+        state.load_avg_1m = 0.0
 
     # Process count
     state.process_count = len(psutil.pids())
@@ -333,7 +337,6 @@ def collect_momentum(git: GitState, commands: list[CommandEntry]) -> MomentumSta
         dist = command_distribution(commands)
         total = sum(dist.values())
         if total > 0 and len(dist) > 1:
-            import math
             entropy = -sum(
                 (c / total) * math.log2(c / total)
                 for c in dist.values() if c > 0

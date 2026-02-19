@@ -7,6 +7,7 @@ from termpulse.collectors import (
     GitState,
     MomentumState,
     SystemState,
+    _categorize_command,
     collect_commands,
     collect_git,
     collect_momentum,
@@ -129,3 +130,108 @@ def test_flow_bar():
     from termpulse.widgets import flow_bar
     bar = flow_bar(75, 10)
     assert len(bar) > 0
+
+
+# === Bug fix regression tests ===
+
+def test_git_state_conflicts_not_double_counted():
+    """Conflict files should not also count as modified (bug fix)."""
+    # Simulate a UU conflict line — conflicts should increment, not modified
+    g = GitState(conflicts=2, modified=0)
+    assert g.total_changes == 0  # conflicts not in total_changes
+    assert g.conflicts == 2
+    assert g.modified == 0
+
+
+def test_categorize_command_full_path():
+    """Commands with full paths should be categorized by basename."""
+    assert _categorize_command("/usr/bin/git status") == "git"
+    assert _categorize_command("/usr/local/bin/python3 test.py") == "python"
+    assert _categorize_command("unknown_tool --help") == "other"
+
+
+def test_categorize_command_empty():
+    """Empty string should not crash."""
+    assert _categorize_command("") == "other"
+    assert _categorize_command("   ") == "other"
+
+
+def test_momentum_single_category():
+    """Single command category should yield 0 diversity."""
+    git = GitState(is_repo=True, last_commit_age_seconds=300)
+    commands = [
+        CommandEntry(raw="git status", command="git", category="git"),
+        CommandEntry(raw="git log", command="git", category="git"),
+    ]
+    m = collect_momentum(git, commands)
+    assert m.command_diversity == 0.0
+
+
+def test_momentum_no_commands():
+    """No commands should not crash and yield 0 diversity."""
+    git = GitState(is_repo=True, last_commit_age_seconds=300)
+    m = collect_momentum(git, [])
+    assert m.command_diversity == 0.0
+    assert 0 <= m.flow_score <= 100
+
+
+def test_system_state_has_disk_values():
+    """System collector should populate actual GB values."""
+    s = collect_system()
+    assert s.memory_used_gb > 0
+    assert s.disk_total_gb > 0
+
+
+def test_drift_bar_extremes():
+    """Drift bar should handle 0 and very large values."""
+    from termpulse.widgets import drift_bar
+    bar_zero = drift_bar(0, 10)
+    assert len(bar_zero) > 0
+    bar_huge = drift_bar(500, 10)
+    assert len(bar_huge) > 0
+
+
+def test_flow_bar_boundaries():
+    """Flow bar at 0 and 100."""
+    from termpulse.widgets import flow_bar
+    bar_zero = flow_bar(0, 10)
+    assert len(bar_zero) > 0
+    bar_max = flow_bar(100, 10)
+    assert len(bar_max) > 0
+
+
+def test_sparkline_single_value():
+    """Sparkline with a single value should not crash."""
+    from termpulse.widgets import sparkline
+    result = sparkline([42.0], 5)
+    assert len(result) == 5
+
+
+def test_cli_version():
+    """CLI --version flag should work."""
+    import subprocess
+    result = subprocess.run(
+        ["python", "-m", "termpulse", "--version"],
+        capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode == 0
+    assert "termpulse" in result.stdout
+
+
+def test_cli_bad_cwd():
+    """CLI --cwd with nonexistent dir should exit 1."""
+    import subprocess
+    result = subprocess.run(
+        ["python", "-m", "termpulse", "--cwd", "/nonexistent/path/xyz"],
+        capture_output=True, text=True, timeout=5,
+    )
+    assert result.returncode == 1
+    assert "not found" in result.stderr
+
+
+def test_collect_git_nonrepo(tmp_path):
+    """collect_git in a non-git directory should return empty state."""
+    g = collect_git(cwd=str(tmp_path))
+    assert not g.is_repo
+    assert g.branch == ""
+    assert g.is_clean
