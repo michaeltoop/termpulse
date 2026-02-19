@@ -1,0 +1,60 @@
+/* termpulse — Convergent Terminal Dashboard */
+/* Contextual theming: border colors shift with git state */
+
+Screen {
+    layout: grid;
+    grid-size: 2 3;
+    grid-gutter: 1;
+    padding: 1;
+    background: $surface;
+}
+
+/* Header spans full width */
+#header {
+    column-span: 2;
+    height: 3;
+    content-align: center middle;
+    background: $primary-background;
+    color: $text;
+    text-style: bold;
+}
+
+/* Main panels */
+#git-pulse {
+    height: 100%;
+    min-height: 10;
+}
+
+#system-vitals {
+    height: 100%;
+    min-height: 10;
+}
+
+#command-flow {
+    column-span: 2;
+    height: 100%;
+    min-height: 8;
+}
+
+#momentum {
+    dock: bottom;
+    height: 8;
+    column-span: 2;
+}
+
+/* Contextual color overrides */
+.drift-calm GitPulse {
+    border: round green;
+}
+
+.drift-warm GitPulse {
+    border: round yellow;
+}
+
+.drift-hot GitPulse {
+    border: round $warning;
+}
+
+.drift-critical GitPulse {
+    border: round red;
+}
