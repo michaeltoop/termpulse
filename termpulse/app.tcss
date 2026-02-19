@@ -58,3 +58,11 @@ Screen {
 .drift-critical GitPulse {
     border: round red;
 }
+
+/* Focus styling — AFTER drift rules so focus always wins on specificity tie */
+GitPulse:focus,
+SystemVitals:focus,
+CommandFlow:focus,
+MomentumTracker:focus {
+    border: thick $accent;
+}

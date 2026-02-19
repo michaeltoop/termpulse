@@ -96,7 +96,7 @@ def flow_bar(score: float, width: int = 25) -> Text:
 # Git Pulse Widget
 # =========================================================================
 
-class GitPulse(Static):
+class GitPulse(Static, can_focus=True):
     """Real-time git awareness with drift detection.
 
     Novel concept: the drift meter fills up over time since last commit,
@@ -181,7 +181,7 @@ class GitPulse(Static):
 # System Vitals Widget
 # =========================================================================
 
-class SystemVitals(Static):
+class SystemVitals(Static, can_focus=True):
     """CPU, memory, disk, and network as sparkline visualizations."""
 
     sys_state: reactive[SystemState] = reactive(SystemState, recompose=True)
@@ -294,7 +294,7 @@ CATEGORY_ICONS = {
 }
 
 
-class CommandFlow(Static):
+class CommandFlow(Static, can_focus=True):
     """Command history as a semantic stream.
 
     Novel concept: instead of a flat history list, commands are grouped
@@ -357,7 +357,7 @@ class CommandFlow(Static):
 # Momentum Tracker Widget (Novel)
 # =========================================================================
 
-class MomentumTracker(Static):
+class MomentumTracker(Static, can_focus=True):
     """Developer momentum and flow detection.
 
     Novel concept: tracks your command diversity, commit velocity,

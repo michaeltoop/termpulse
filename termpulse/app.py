@@ -137,6 +137,7 @@ class TermPulseApp(App):
         self._refresh_system()
         self._refresh_commands()
         self._refresh_momentum()
+        self.notify("Refreshed all panels", timeout=2)
 
     def action_focus_git(self) -> None:
         self.query_one("#git-pulse").focus()
