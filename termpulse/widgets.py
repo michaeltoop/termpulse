@@ -9,6 +9,8 @@ Each widget renders one domain of developer awareness:
 
 from __future__ import annotations
 
+import re
+
 from rich.console import Group
 from rich.panel import Panel
 from rich.table import Table
@@ -18,7 +20,9 @@ from textual.widgets import Static
 
 from termpulse.collectors import (
     CommandEntry,
+    DiffFile,
     GitState,
+    HeatmapEntry,
     MomentumState,
     SystemState,
     command_distribution,
@@ -402,3 +406,326 @@ class MomentumTracker(Static, can_focus=True):
 
         content = Group(table, Text(""), flow_text)
         return Panel(content, title="[bold]Momentum[/]", border_style="magenta")
+
+
+# =========================================================================
+# Diff Explorer Widget (Novel: visual git change review)
+# =========================================================================
+
+STATUS_ICONS = {
+    "M": ("~", "yellow"),
+    "A": ("+", "green"),
+    "D": ("-", "red"),
+    "R": ("R", "cyan"),
+    "?": ("?", "dim"),
+}
+
+
+def change_fingerprint(diff_lines: list[str], width: int = 10) -> Text:
+    """Visual fingerprint showing WHERE in a file changes occur.
+
+    Novel concept: each block represents a portion of the file.
+    Bright green = changes there, dim = unchanged.
+    Gives an instant visual map of change locations without reading the diff.
+    """
+    if not diff_lines:
+        return Text("." * width, style="dim")
+
+    max_line = 1
+    change_regions: list[tuple[int, int]] = []
+
+    for line in diff_lines:
+        if line.startswith("@@"):
+            match = re.match(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@", line)
+            if match:
+                start = int(match.group(1))
+                count = int(match.group(2) or 1)
+                end = start + count
+                max_line = max(max_line, end)
+                change_regions.append((start, end))
+
+    if not change_regions:
+        return Text("." * width, style="dim")
+
+    text = Text()
+    for i in range(width):
+        block_start = (i / width) * max_line
+        block_end = ((i + 1) / width) * max_line
+        has_change = any(
+            rs < block_end and re_ > block_start
+            for rs, re_ in change_regions
+        )
+        if has_change:
+            text.append("\u2593", style="bright_green")
+        else:
+            text.append("\u2591", style="dim")
+
+    return text
+
+
+def diff_density(insertions: int, deletions: int, width: int = 10) -> Text:
+    """Colored bar: green proportion = adds, red = deletes."""
+    total = insertions + deletions
+    if total == 0:
+        return Text("." * width, style="dim")
+
+    ins_w = max(1, int((insertions / total) * width)) if insertions else 0
+    del_w = width - ins_w
+
+    text = Text()
+    if ins_w:
+        text.append("\u2588" * ins_w, style="green")
+    if del_w:
+        text.append("\u2588" * del_w, style="red")
+    return text
+
+
+def render_diff_lines(diff_lines: list[str], max_lines: int = 25) -> Text:
+    """Render actual diff content with syntax-aware coloring."""
+    text = Text()
+    shown = 0
+
+    for line in diff_lines:
+        if line.startswith(("diff --git", "index ")):
+            continue
+        if line.startswith("---") or line.startswith("+++"):
+            continue
+
+        if line.startswith("@@"):
+            text.append(f"  {line}\n", style="cyan dim")
+            continue
+
+        if shown >= max_lines:
+            remaining = sum(
+                1 for l in diff_lines
+                if l.startswith("+") or l.startswith("-")
+            ) - shown
+            if remaining > 0:
+                text.append(f"  ... {remaining} more change lines\n", style="dim")
+            break
+
+        if line.startswith("+"):
+            text.append(f"  {line}\n", style="green")
+            shown += 1
+        elif line.startswith("-"):
+            text.append(f"  {line}\n", style="red")
+            shown += 1
+        else:
+            text.append(f"  {line}\n", style="dim")
+            shown += 1
+
+    return text
+
+
+class DiffExplorer(Static, can_focus=True):
+    """Novel git change reviewer with visual fingerprints.
+
+    Navigate files with j/k or arrows, expand diffs with Enter,
+    toggle all with a. Each file shows a change fingerprint
+    (where changes are) and density bar (add/delete ratio).
+    """
+
+    diff_files: reactive[list] = reactive(list, recompose=True)
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._selected_idx = 0
+        self._expanded: set[str] = set()
+
+    def on_key(self, event):
+        files = self.diff_files
+        if not files:
+            return
+
+        if event.key in ("j", "down"):
+            if self._selected_idx < len(files) - 1:
+                self._selected_idx += 1
+                self.refresh(layout=True)
+                event.stop()
+        elif event.key in ("k", "up"):
+            if self._selected_idx > 0:
+                self._selected_idx -= 1
+                self.refresh(layout=True)
+                event.stop()
+        elif event.key == "enter":
+            if 0 <= self._selected_idx < len(files):
+                path = files[self._selected_idx].path
+                if path in self._expanded:
+                    self._expanded.discard(path)
+                else:
+                    self._expanded.add(path)
+                self.refresh(layout=True)
+                event.stop()
+        elif event.key == "a":
+            if len(self._expanded) == len(files):
+                self._expanded.clear()
+            else:
+                self._expanded = {f.path for f in files}
+            self.refresh(layout=True)
+            event.stop()
+
+    def render(self):
+        from pathlib import Path as P
+
+        files: list[DiffFile] = self.diff_files
+
+        # Clamp selection
+        if files and self._selected_idx >= len(files):
+            self._selected_idx = max(0, len(files) - 1)
+        current_paths = {f.path for f in files}
+        self._expanded = self._expanded & current_paths
+
+        if not files:
+            return Panel(
+                Text("Working tree clean \u2014 no changes to review", style="green italic"),
+                title="[bold]Diff Explorer[/]",
+                subtitle="[dim]f: back to dashboard[/]",
+                border_style="green",
+            )
+
+        parts: list[Text] = []
+
+        # Group files by directory
+        dirs: dict[str, list[tuple[int, DiffFile]]] = {}
+        for idx, f in enumerate(files):
+            dir_name = str(P(f.path).parent)
+            if dir_name == ".":
+                dir_name = "."
+            dirs.setdefault(dir_name, []).append((idx, f))
+
+        total_ins = sum(f.insertions for f in files)
+        total_dels = sum(f.deletions for f in files)
+
+        for dir_name, dir_files in dirs.items():
+            if dir_name != ".":
+                dir_text = Text()
+                dir_text.append(f"  {dir_name}/", style="bold blue")
+                parts.append(dir_text)
+
+            for idx, f in dir_files:
+                is_selected = idx == self._selected_idx
+                is_expanded = f.path in self._expanded
+
+                line = Text()
+
+                # Selection indicator
+                if is_selected:
+                    arrow = " \u25be " if is_expanded else " \u25b8 "
+                    line.append(arrow, style="bold cyan")
+                else:
+                    line.append("   ", style="dim")
+
+                # Status icon
+                icon, color = STATUS_ICONS.get(f.status, ("?", "dim"))
+                line.append(f"{icon} ", style=f"bold {color}")
+
+                # File name
+                fname = P(f.path).name
+                line.append(fname, style="bold white" if is_selected else "white")
+
+                # Stats
+                if f.insertions or f.deletions:
+                    line.append(f"  +{f.insertions}", style="green")
+                    line.append(f" -{f.deletions}", style="red")
+                    line.append("  ")
+                    line.append_text(diff_density(f.insertions, f.deletions, 8))
+                    line.append(" ")
+                    line.append_text(change_fingerprint(f.diff_lines, 10))
+                elif f.status == "?":
+                    line.append("  new file", style="dim italic")
+
+                parts.append(line)
+
+                # Expanded diff
+                if is_expanded and f.diff_lines:
+                    sep = Text("  " + "\u2500" * 50, style="dim")
+                    parts.append(sep)
+                    parts.append(render_diff_lines(f.diff_lines))
+                    parts.append(sep)
+
+        # Summary footer
+        parts.append(Text(""))
+        summary = Text()
+        summary.append(f"  {len(files)} file{'s' if len(files) != 1 else ''}", style="bold")
+        summary.append(f"  +{total_ins}", style="green")
+        summary.append(f" -{total_dels}", style="red")
+        summary.append("  \u2502  ", style="dim")
+        summary.append("j/k", style="bold cyan")
+        summary.append(": navigate  ", style="dim")
+        summary.append("Enter", style="bold cyan")
+        summary.append(": expand  ", style="dim")
+        summary.append("a", style="bold cyan")
+        summary.append(": all", style="dim")
+        parts.append(summary)
+
+        content = Group(*parts)
+        return Panel(
+            content,
+            title="[bold]Diff Explorer[/]",
+            subtitle="[dim]f: back to dashboard[/]",
+            border_style="cyan",
+        )
+
+
+# =========================================================================
+# File Heatmap Widget (Novel: churn frequency visualization)
+# =========================================================================
+
+class FileHeatmap(Static, can_focus=True):
+    """File churn heatmap \u2014 which files change most often.
+
+    Novel: visual heat bars show relative change frequency,
+    color-graded from cool (blue) to hot (red).
+    """
+
+    heatmap: reactive[list] = reactive(list, recompose=True)
+
+    def render(self):
+        entries: list[HeatmapEntry] = self.heatmap
+
+        if not entries:
+            return Panel(
+                Text("No commit history", style="dim italic"),
+                title="[bold]File Heatmap[/]",
+                border_style="blue",
+            )
+
+        max_count = max(e.commit_count for e in entries)
+
+        parts: list[Text] = []
+        for e in entries:
+            line = Text()
+            bar_width = 12
+            fill = int((e.commit_count / max_count) * bar_width)
+            empty = bar_width - fill
+
+            ratio = e.commit_count / max_count
+            if ratio > 0.75:
+                color = "red"
+            elif ratio > 0.5:
+                color = "dark_orange"
+            elif ratio > 0.25:
+                color = "yellow"
+            else:
+                color = "blue"
+
+            line.append("  ")
+            line.append("\u2588" * fill, style=color)
+            line.append("\u2591" * empty, style="dim")
+            line.append(f" {e.path}", style="white")
+            line.append(f" ({e.commit_count})", style="dim")
+
+            parts.append(line)
+
+        parts.append(Text(""))
+        footer = Text()
+        footer.append(f"  Top {len(entries)} hotspots", style="dim")
+        parts.append(footer)
+
+        content = Group(*parts)
+        return Panel(
+            content,
+            title="[bold]File Heatmap[/]",
+            subtitle="[dim]Churn frequency[/]",
+            border_style="dark_orange",
+        )

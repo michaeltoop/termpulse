@@ -8,6 +8,9 @@ Novel concepts:
 2. Momentum/Flow Score — composite metric of commit velocity + command diversity
 3. Command Archaeology — shell history as a semantic stream of colored symbols
 4. Contextual Theming — dashboard colors shift based on repository state
+5. Diff Explorer — interactive git change reviewer with visual fingerprints
+6. Change Fingerprints — minimap showing WHERE in each file changes occur
+7. File Heatmap — churn frequency visualization of codebase hotspots
 
 Built with Textual (https://textual.textualize.io).
 """
@@ -19,17 +22,22 @@ from pathlib import Path
 
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical
-from textual.widgets import Footer, Header, Static
+
+from textual.reactive import reactive
+from textual.widgets import Footer, Static
 
 from termpulse.collectors import (
     collect_commands,
+    collect_diff_files,
+    collect_file_heatmap,
     collect_git,
     collect_momentum,
     collect_system,
 )
 from termpulse.widgets import (
     CommandFlow,
+    DiffExplorer,
+    FileHeatmap,
     GitPulse,
     MomentumTracker,
     SystemVitals,
@@ -37,7 +45,9 @@ from termpulse.widgets import (
 
 
 class TermPulseHeader(Static):
-    """Custom header showing project context."""
+    """Custom header showing project context and active view."""
+
+    view_mode: reactive[str] = reactive("dashboard", recompose=True)
 
     def render(self):
         cwd = os.getcwd()
@@ -46,6 +56,11 @@ class TermPulseHeader(Static):
         text.append(" termpulse ", style="bold white on dark_blue")
         text.append("  ", style="dim")
         text.append(f" {project} ", style="bold cyan")
+        text.append("  ", style="dim")
+        if self.view_mode == "diff":
+            text.append(" DIFF EXPLORER ", style="bold black on cyan")
+        else:
+            text.append(" DASHBOARD ", style="bold black on green")
         text.append("  ", style="dim")
         text.append(cwd, style="dim")
         return text
@@ -65,14 +80,18 @@ class TermPulseApp(App):
         ("c", "focus_commands", "Commands"),
         ("m", "focus_momentum", "Momentum"),
         ("d", "toggle_dark", "Theme"),
+        ("f", "toggle_diff", "Files"),
     ]
 
     def compose(self) -> ComposeResult:
         yield TermPulseHeader(id="header")
-        with Horizontal():
-            yield GitPulse(id="git-pulse")
-            yield SystemVitals(id="system-vitals")
+        # Dashboard view — direct grid items (row 2: git + system, row 3: commands)
+        yield GitPulse(id="git-pulse")
+        yield SystemVitals(id="system-vitals")
         yield CommandFlow(id="command-flow")
+        # Diff Explorer view — hidden by default, toggled with f
+        yield DiffExplorer(id="diff-explorer")
+        yield FileHeatmap(id="file-heatmap")
         yield MomentumTracker(id="momentum")
         yield Footer()
 
@@ -81,6 +100,7 @@ class TermPulseApp(App):
         # Cached state for cross-widget sharing
         self._last_git = None
         self._last_commands = None
+        self._diff_view = False
 
         # Git: refresh every 5 seconds
         self.set_interval(5.0, self._refresh_git)
@@ -90,6 +110,8 @@ class TermPulseApp(App):
         self.set_interval(10.0, self._refresh_commands)
         # Momentum: refresh every 5 seconds
         self.set_interval(5.0, self._refresh_momentum)
+        # Diff explorer: refresh every 10 seconds when active
+        self.set_interval(10.0, self._maybe_refresh_diff)
 
         # Initial data load
         self._refresh_git()
@@ -150,3 +172,46 @@ class TermPulseApp(App):
 
     def action_focus_momentum(self) -> None:
         self.query_one("#momentum").focus()
+
+    def _refresh_diff(self) -> None:
+        """Collect and update diff explorer data."""
+        files = collect_diff_files()
+        widget = self.query_one("#diff-explorer", DiffExplorer)
+        widget.diff_files = files
+
+    def _refresh_heatmap(self) -> None:
+        """Collect and update file heatmap."""
+        entries = collect_file_heatmap()
+        widget = self.query_one("#file-heatmap", FileHeatmap)
+        widget.heatmap = entries
+
+    def _maybe_refresh_diff(self) -> None:
+        """Refresh diff view only when it's visible."""
+        if self._diff_view:
+            self._refresh_diff()
+
+    def action_toggle_diff(self) -> None:
+        """Toggle between dashboard and diff explorer views."""
+        self._diff_view = not self._diff_view
+        dashboard = not self._diff_view
+
+        # Toggle dashboard widgets
+        self.query_one("#git-pulse").display = dashboard
+        self.query_one("#system-vitals").display = dashboard
+        self.query_one("#command-flow").display = dashboard
+
+        # Toggle diff view widgets
+        self.query_one("#diff-explorer").display = self._diff_view
+        self.query_one("#file-heatmap").display = self._diff_view
+
+        # Update header view indicator
+        header = self.query_one("#header", TermPulseHeader)
+        header.view_mode = "diff" if self._diff_view else "dashboard"
+
+        if self._diff_view:
+            self._refresh_diff()
+            self._refresh_heatmap()
+            self.query_one("#diff-explorer").focus()
+            self.notify("Diff Explorer \u2014 j/k navigate, Enter expand, a toggle all", timeout=3)
+        else:
+            self.notify("Dashboard view", timeout=2)

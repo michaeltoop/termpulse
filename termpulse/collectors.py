@@ -22,6 +22,26 @@ import psutil
 
 
 # =========================================================================
+# Shared git helper
+# =========================================================================
+
+def _run_git(args: list[str], cwd: Optional[str] = None, timeout: int = 5) -> Optional[str]:
+    """Run a git command and return stdout, or None on failure.
+
+    Uses rstrip (not strip) to preserve leading whitespace, which is
+    significant in porcelain-format output where space is a status char.
+    """
+    try:
+        result = subprocess.run(
+            ["git"] + args,
+            capture_output=True, text=True, timeout=timeout, cwd=cwd or os.getcwd(),
+        )
+        return result.stdout.rstrip() if result.returncode == 0 else None
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+
+
+# =========================================================================
 # Git Collector
 # =========================================================================
 
@@ -70,27 +90,18 @@ def collect_git(cwd: Optional[str] = None) -> GitState:
     """Collect git state from the current or given directory."""
     cwd = cwd or os.getcwd()
     state = GitState()
-
-    def _run(args: list[str]) -> Optional[str]:
-        try:
-            result = subprocess.run(
-                ["git"] + args,
-                capture_output=True, text=True, timeout=5, cwd=cwd,
-            )
-            return result.stdout.strip() if result.returncode == 0 else None
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            return None
+    run = lambda args: _run_git(args, cwd=cwd)
 
     # Check if git repo
-    if _run(["rev-parse", "--is-inside-work-tree"]) != "true":
+    if run(["rev-parse", "--is-inside-work-tree"]) != "true":
         return state
     state.is_repo = True
 
     # Branch
-    state.branch = _run(["branch", "--show-current"]) or _run(["rev-parse", "--short", "HEAD"]) or "?"
+    state.branch = run(["branch", "--show-current"]) or run(["rev-parse", "--short", "HEAD"]) or "?"
 
     # Ahead/behind
-    ab = _run(["rev-list", "--left-right", "--count", f"{state.branch}...@{{u}}"])
+    ab = run(["rev-list", "--left-right", "--count", f"{state.branch}...@{{u}}"])
     if ab:
         parts = ab.split()
         if len(parts) == 2:
@@ -98,7 +109,7 @@ def collect_git(cwd: Optional[str] = None) -> GitState:
             state.behind = int(parts[1])
 
     # Status counts
-    status = _run(["status", "--porcelain"])
+    status = run(["status", "--porcelain"])
     if status:
         for line in status.splitlines():
             if len(line) < 2:
@@ -114,20 +125,20 @@ def collect_git(cwd: Optional[str] = None) -> GitState:
                 state.untracked += 1
 
     # Last commit age
-    timestamp = _run(["log", "-1", "--format=%ct"])
+    timestamp = run(["log", "-1", "--format=%ct"])
     if timestamp:
         state.last_commit_age_seconds = time.time() - float(timestamp)
 
     # Last commit message
-    state.last_commit_msg = _run(["log", "-1", "--format=%s"]) or ""
+    state.last_commit_msg = run(["log", "-1", "--format=%s"]) or ""
 
     # Recent commits (last 5)
-    log = _run(["log", "--oneline", "-5"])
+    log = run(["log", "--oneline", "-5"])
     if log:
         state.recent_commits = log.splitlines()
 
     # Stash count
-    stash = _run(["stash", "list"])
+    stash = run(["stash", "list"])
     if stash:
         state.stash_count = len(stash.splitlines())
 
@@ -358,3 +369,141 @@ def collect_momentum(git: GitState, commands: list[CommandEntry]) -> MomentumSta
     )
 
     return state
+
+
+# =========================================================================
+# Diff Collector (Novel: file-level change review with fingerprints)
+# =========================================================================
+
+@dataclass
+class DiffFile:
+    """A changed file with diff statistics and content."""
+    path: str
+    status: str = "M"  # M=modified, A=added, D=deleted, R=renamed, ?=untracked
+    insertions: int = 0
+    deletions: int = 0
+    diff_lines: list[str] = field(default_factory=list)
+
+    @property
+    def total_changes(self) -> int:
+        return self.insertions + self.deletions
+
+    @property
+    def change_ratio(self) -> float:
+        """0=all deletions, 0.5=balanced, 1=all insertions."""
+        if self.total_changes == 0:
+            return 0.5
+        return self.insertions / self.total_changes
+
+
+@dataclass
+class HeatmapEntry:
+    """File change frequency from recent git history."""
+    path: str
+    commit_count: int = 0
+    last_author: str = ""
+
+
+def collect_diff_files(cwd: Optional[str] = None) -> list[DiffFile]:
+    """Collect all changed files with diffs, stats, and fingerprint data."""
+    cwd = cwd or os.getcwd()
+    files: list[DiffFile] = []
+    run = lambda args, **kw: _run_git(args, cwd=cwd, **kw)
+
+    if run(["rev-parse", "--is-inside-work-tree"]) != "true":
+        return files
+
+    status_output = run(["status", "--porcelain"])
+    if not status_output:
+        return files
+
+    seen: set[str] = set()
+    for line in status_output.splitlines():
+        if len(line) < 3:
+            continue
+        x, y = line[0], line[1]
+        path = line[3:].strip()
+        if " -> " in path:
+            path = path.split(" -> ")[1]
+        if path in seen:
+            continue
+        seen.add(path)
+
+        if x == "?" and y == "?":
+            st = "?"
+        elif x == "A":
+            st = "A"
+        elif x == "D" or y == "D":
+            st = "D"
+        elif x == "R":
+            st = "R"
+        else:
+            st = "M"
+
+        files.append(DiffFile(path=path, status=st))
+
+    # Numstat for unstaged changes
+    numstat = run(["diff", "--numstat"])
+    if numstat:
+        for line in numstat.splitlines():
+            parts = line.split("\t")
+            if len(parts) == 3:
+                ins, dels, fpath = parts
+                for f in files:
+                    if f.path == fpath:
+                        f.insertions = int(ins) if ins != "-" else 0
+                        f.deletions = int(dels) if dels != "-" else 0
+                        break
+
+    # Numstat for staged changes
+    numstat_staged = run(["diff", "--numstat", "--cached"])
+    if numstat_staged:
+        for line in numstat_staged.splitlines():
+            parts = line.split("\t")
+            if len(parts) == 3:
+                ins, dels, fpath = parts
+                for f in files:
+                    if f.path == fpath:
+                        f.insertions += int(ins) if ins != "-" else 0
+                        f.deletions += int(dels) if dels != "-" else 0
+                        break
+
+    # Collect actual diff content per file
+    for f in files:
+        if f.status == "?":
+            continue
+        # Try unstaged diff first, then staged, then combined
+        diff_out = run(["diff", "--", f.path])
+        if not diff_out:
+            diff_out = run(["diff", "--cached", "--", f.path])
+        if diff_out:
+            f.diff_lines = diff_out.splitlines()
+
+    files.sort(key=lambda f: (f.status == "?", f.path))
+    return files
+
+
+def collect_file_heatmap(cwd: Optional[str] = None, commits: int = 50, limit: int = 15) -> list[HeatmapEntry]:
+    """Find the most frequently changed files in recent git history."""
+    cwd = cwd or os.getcwd()
+    run = lambda args, **kw: _run_git(args, cwd=cwd, timeout=10, **kw)
+
+    if run(["rev-parse", "--is-inside-work-tree"]) != "true":
+        return []
+
+    log_output = run(["log", f"-{commits}", "--name-only", "--pretty=format:"])
+    if not log_output:
+        return []
+
+    file_counts: Counter[str] = Counter()
+    for line in log_output.splitlines():
+        stripped = line.strip()
+        if stripped:
+            file_counts[stripped] += 1
+
+    entries = []
+    for path, count in file_counts.most_common(limit):
+        author = run(["log", "-1", "--format=%an", "--", path]) or ""
+        entries.append(HeatmapEntry(path=path, commit_count=count, last_author=author))
+
+    return entries

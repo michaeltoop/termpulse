@@ -19,7 +19,7 @@ Screen {
     text-style: bold;
 }
 
-/* Main panels */
+/* Dashboard view — git and system side by side in row 2 */
 #git-pulse {
     height: 100%;
     min-height: 10;
@@ -59,10 +59,27 @@ Screen {
     border: round red;
 }
 
+/* Diff Explorer view — hidden by default, toggled with f */
+#diff-explorer {
+    display: none;
+    column-span: 2;
+    height: 100%;
+    min-height: 15;
+}
+
+#file-heatmap {
+    display: none;
+    column-span: 2;
+    height: 100%;
+    min-height: 8;
+}
+
 /* Focus styling — AFTER drift rules so focus always wins on specificity tie */
 GitPulse:focus,
 SystemVitals:focus,
 CommandFlow:focus,
-MomentumTracker:focus {
+MomentumTracker:focus,
+DiffExplorer:focus,
+FileHeatmap:focus {
     border: thick $accent;
 }

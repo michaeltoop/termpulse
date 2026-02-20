@@ -4,11 +4,16 @@ import time
 
 from termpulse.collectors import (
     CommandEntry,
+    DiffFile,
     GitState,
+    HeatmapEntry,
     MomentumState,
     SystemState,
     _categorize_command,
+    _run_git,
     collect_commands,
+    collect_diff_files,
+    collect_file_heatmap,
     collect_git,
     collect_momentum,
     collect_system,
@@ -235,3 +240,136 @@ def test_collect_git_nonrepo(tmp_path):
     assert not g.is_repo
     assert g.branch == ""
     assert g.is_clean
+
+
+# === DiffFile ===
+
+def test_diff_file_defaults():
+    d = DiffFile(path="test.py")
+    assert d.total_changes == 0
+    assert d.change_ratio == 0.5
+    assert d.status == "M"
+
+
+def test_diff_file_with_changes():
+    d = DiffFile(path="test.py", insertions=10, deletions=5)
+    assert d.total_changes == 15
+    assert abs(d.change_ratio - 10 / 15) < 0.01
+
+
+def test_diff_file_all_insertions():
+    d = DiffFile(path="new.py", status="A", insertions=20, deletions=0)
+    assert d.change_ratio == 1.0
+
+
+def test_diff_file_all_deletions():
+    d = DiffFile(path="old.py", status="D", insertions=0, deletions=15)
+    assert d.change_ratio == 0.0
+
+
+# === HeatmapEntry ===
+
+def test_heatmap_entry_defaults():
+    h = HeatmapEntry(path="app.py")
+    assert h.commit_count == 0
+    assert h.last_author == ""
+
+
+# === collect_diff_files ===
+
+def test_collect_diff_files_nonrepo(tmp_path):
+    """Non-git directory returns empty list."""
+    files = collect_diff_files(cwd=str(tmp_path))
+    assert files == []
+
+
+def test_collect_diff_files_returns_list():
+    """Should return a list (may be empty if tree is clean)."""
+    files = collect_diff_files()
+    assert isinstance(files, list)
+
+
+# === collect_file_heatmap ===
+
+def test_collect_file_heatmap_nonrepo(tmp_path):
+    """Non-git directory returns empty list."""
+    entries = collect_file_heatmap(cwd=str(tmp_path))
+    assert entries == []
+
+
+def test_collect_file_heatmap_returns_list():
+    """Should return a list of HeatmapEntry objects."""
+    entries = collect_file_heatmap()
+    assert isinstance(entries, list)
+    for e in entries:
+        assert isinstance(e, HeatmapEntry)
+        assert e.commit_count > 0
+
+
+# === Novel widget renderers ===
+
+def test_change_fingerprint():
+    from termpulse.widgets import change_fingerprint
+    # With diff lines containing hunk headers
+    diff = [
+        "@@ -1,5 +1,8 @@",
+        "+new line",
+        " context",
+        "@@ -20,3 +23,5 @@",
+        "+another",
+    ]
+    fp = change_fingerprint(diff, 10)
+    assert len(fp) > 0
+
+
+def test_change_fingerprint_empty():
+    from termpulse.widgets import change_fingerprint
+    fp = change_fingerprint([], 10)
+    assert len(fp) == 10
+
+
+def test_diff_density():
+    from termpulse.widgets import diff_density
+    bar = diff_density(10, 5, 10)
+    assert len(bar) > 0
+
+
+def test_diff_density_zero():
+    from termpulse.widgets import diff_density
+    bar = diff_density(0, 0, 10)
+    assert len(bar) == 10
+
+
+def test_render_diff_lines():
+    from termpulse.widgets import render_diff_lines
+    lines = [
+        "diff --git a/f b/f",
+        "--- a/f",
+        "+++ b/f",
+        "@@ -1,3 +1,4 @@",
+        " context",
+        "+added",
+        "-removed",
+    ]
+    text = render_diff_lines(lines)
+    assert len(text) > 0
+
+
+# === Shared git helper ===
+
+def test_run_git_in_repo():
+    """_run_git should return output in a valid git repo."""
+    result = _run_git(["rev-parse", "--is-inside-work-tree"])
+    assert result == "true"
+
+
+def test_run_git_nonrepo(tmp_path):
+    """_run_git returns None for invalid git commands in non-repo."""
+    result = _run_git(["rev-parse", "--is-inside-work-tree"], cwd=str(tmp_path))
+    assert result is None
+
+
+def test_run_git_bad_command():
+    """_run_git returns None for invalid git subcommands."""
+    result = _run_git(["not-a-real-command-xyz"])
+    assert result is None
